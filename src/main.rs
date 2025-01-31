@@ -3,8 +3,10 @@ use reqwest;
 use rustyline::{error::ReadlineError, Editor};
 use serde::Deserialize;
 use std::process::{Child, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tungstenite::connect;
+use tokio::signal;
 
 #[derive(Deserialize)]
 struct DevToolsTarget {
@@ -34,7 +36,7 @@ async fn get_debugger_url(port: u16) -> Option<String> {
     None
 }
 
-fn start_electron_app(app_name: &str, port: u16) -> Option<Child> {
+fn start_electron_app(app_name: &str, port: u16) -> Option<Arc<Mutex<Child>>> {
     if cfg!(target_os = "windows") {
         eprintln!("[!] Windows is not supported yet.");
         return None;
@@ -64,7 +66,7 @@ fn start_electron_app(app_name: &str, port: u16) -> Option<Child> {
                 .stderr(Stdio::null())
                 .spawn()
             {
-                return Some(child);
+                return Some(Arc::new(Mutex::new(child)));
             }
         }
     }
@@ -73,7 +75,7 @@ fn start_electron_app(app_name: &str, port: u16) -> Option<Child> {
     None
 }
 
-async fn repl(debugger_url: String, app_name: &str) {
+async fn repl(debugger_url: String, app_name: &str, child: Arc<Mutex<Child>>) {
     let (mut socket, _) = match connect(&debugger_url) {
         Ok(connection) => connection,
         Err(err) => {
@@ -84,7 +86,7 @@ async fn repl(debugger_url: String, app_name: &str) {
 
     let mut rl = Editor::<(), rustyline::history::FileHistory>::new().unwrap();
 
-    println!("[*] Electron REPL Activated");
+    println!("[*] Electron REPL Activated (Ctrl+C to exit)");
 
     loop {
         match rl.readline(&format!("{}> ", app_name)) {
@@ -152,6 +154,9 @@ async fn repl(debugger_url: String, app_name: &str) {
             Err(err) => eprintln!("[!] Input error: {}", err),
         }
     }
+
+    println!("[*] Shutting down Electron...");
+    let _ = child.lock().unwrap().kill();
 }
 
 #[tokio::main]
@@ -179,11 +184,20 @@ async fn main() {
         eprintln!("[!] Failed to start app: {}", app_name);
         return;
     }
+    let child = child.unwrap();
 
     let debugger_url = get_debugger_url(port).await;
     if let Some(debugger_url) = debugger_url {
-        repl(debugger_url, app_name).await;
+        let child_clone = child.clone();
+        tokio::spawn(async move {
+            signal::ctrl_c().await.unwrap();
+            println!("\n[*] Ctrl+C detected, shutting down...");
+            let _ = child_clone.lock().unwrap().kill();
+        });
+
+        repl(debugger_url, app_name, child).await;
     } else {
         eprintln!("[!] Failed to retrieve WebSocket");
+        let _ = child.lock().unwrap().kill();
     }
 }
