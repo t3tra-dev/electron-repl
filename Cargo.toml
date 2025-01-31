@@ -1,6 +1,6 @@
 [package]
 name = "electron-repl"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A command-line REPL tool for Electron applications that allows you to execute JavaScript code in the main process."
 license = "MIT"
